@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 import numpy as np
 import pybullet as p
 import cv2
@@ -23,8 +24,9 @@ reconstruction_config = {
     'max_correspondence_distance': 0.02
 }
 
+_repo_root = Path(__file__).resolve().parents[1]
 graspnet_config = {
-    'graspnet_checkpoint_path': 'models/graspnet/logs/log_rs/checkpoint.tar',
+    'graspnet_checkpoint_path': str(_repo_root / 'models' / 'graspnet' / 'logs' / 'log_rs' / 'checkpoint.tar'),
     'refine_approach_dist': 0.01,
     'dist_thresh': 0.05,
     'angle_thresh': 15,

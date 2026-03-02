@@ -48,6 +48,7 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     
     # set device and seed
     args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -57,6 +58,10 @@ if __name__ == "__main__":
 
     # parameters
     num_episode = args.num_episode
+
+    # resolve paths relative to repo root
+    if not os.path.isabs(args.testing_case_dir):
+        args.testing_case_dir = os.path.join(repo_root, args.testing_case_dir)
 
     # load environment
     env = Environment(gui=True)
@@ -70,11 +75,17 @@ if __name__ == "__main__":
     if args.load_model:
         logger.load_checkpoint(agent, args.model_path, args.evaluate)
         
+    filelist = []
     if os.path.exists(args.testing_case_dir):
         filelist = os.listdir(args.testing_case_dir)
         filelist.sort(key=lambda x:int(x[4:6]))
     if args.testing_case != None:
         filelist = [args.testing_case]
+    if len(filelist) == 0:
+        raise FileNotFoundError(
+            f"No testing cases found in {args.testing_case_dir}. "
+            "Pass --testing_case_dir or --testing_case."
+        )
     case = 0
     iteration = 0
     for f in filelist:
