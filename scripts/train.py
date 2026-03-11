@@ -15,6 +15,7 @@ from models.vilg_sac import ViLG
 
 
 def parse_args():
+    """Parse command-line arguments for training."""
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--device', action='store', type=str, default='cuda')
@@ -103,8 +104,10 @@ if __name__ == "__main__":
         episode_steps = 0
         done = False
         reset = False
+        # Exploration schedule (used to decide greedy vs random action)
         episilo = min(0.6 * np.power(1.0002, episode), 0.99)
 
+        # Reset scene until objects are placed successfully
         while not reset:
             env.reset()
             # env_sim.reset()
@@ -129,6 +132,7 @@ if __name__ == "__main__":
                 break     
 
             if episode_steps == 0:
+                # Get initial perception for this episode
                 color_image, depth_image, mask_image = utils.get_true_heightmap(env)
                 bbox_images, bbox_positions = utils.get_true_bboxs(env, color_image, depth_image, mask_image)
 
@@ -152,6 +156,7 @@ if __name__ == "__main__":
                     with torch.no_grad():
                         logits, action_idx, clip_probs, vig_attn = agent.select_action(bboxes, pos_bboxes, lang_goal, grasps)
                 else:
+                    # Random action for exploration
                     action_idx = np.random.randint(0, len(grasp_pose_set))
 
             action = grasp_pose_set[action_idx]
@@ -163,6 +168,7 @@ if __name__ == "__main__":
                     critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha, feature_loss = agent.update_parameters(memory, args.batch_size, updates)
                     updates += 1
 
+            # Execute action in the environment
             reward, done = env.step(action)
             if episode < 500:
                 if reward > -1 and reward < 0:
@@ -191,6 +197,7 @@ if __name__ == "__main__":
             # (https://github.com/openai/spinningup/blob/master/spinup/algos/sac/sac.py)
             mask = 1 if episode_steps == args.max_episode_step else float(not done)
 
+            # Save transition into replay memory
             memory.push(bboxes.detach().cpu().numpy()[0], pos_bboxes.detach().cpu().numpy()[0], grasps.detach().cpu().numpy()[0], lang_goal, action_idx, reward, next_bboxes.detach().cpu().numpy()[0], next_pos_bboxes.detach().cpu().numpy()[0], next_grasps.detach().cpu().numpy()[0], mask) # Append transition to memory
             
             # record
@@ -215,6 +222,7 @@ if __name__ == "__main__":
 
         
         if (episode + 1) % args.save_model_interval == 0:
+            # Periodically checkpoint the model
             logger.save_checkpoint(agent, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), str(episode))
         logger.episode_reward_logs.append(episode_reward)
         logger.episode_step_logs.append(episode_steps)

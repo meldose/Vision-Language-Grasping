@@ -14,6 +14,7 @@ from models.vilg_sac import ViLG
 
 
 def parse_args():
+    """Parse command-line arguments for evaluation/testing."""
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--device', action='store', type=str, default='cuda')
@@ -48,6 +49,7 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
+    # Repo root used to resolve relative paths
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     
     # set device and seed
@@ -75,6 +77,7 @@ if __name__ == "__main__":
     if args.load_model:
         logger.load_checkpoint(agent, args.model_path, args.evaluate)
         
+    # Build list of test case files
     filelist = []
     if os.path.exists(args.testing_case_dir):
         filelist = os.listdir(args.testing_case_dir)
@@ -91,6 +94,7 @@ if __name__ == "__main__":
     for f in filelist:
         f = os.path.join(args.testing_case_dir, f)
 
+        # Reset per-case logs
         logger.episode_reward_logs = []
         logger.episode_step_logs = []
         logger.episode_success_logs = []
@@ -100,6 +104,7 @@ if __name__ == "__main__":
             done = False
             reset = False
 
+            # Reset scene until objects are placed successfully
             while not reset:
                 env.reset()
                 reset, lang_goal = env.add_object_push_from_file(f)
@@ -117,9 +122,10 @@ if __name__ == "__main__":
                     print("\033[031m Target objects are not in the scene!\033[0m")
                     break     
 
-
+                # Get top-down RGB-D and segmentation masks
                 color_image, depth_image, mask_image = utils.get_true_heightmap(env)
 
+                # Extract per-object crops and 3D centers
                 bbox_images, bbox_positions = utils.get_true_bboxs(env, color_image, depth_image, mask_image)
                 # graspnet
                 pcd = utils.get_fuse_pointcloud(env)
@@ -143,6 +149,7 @@ if __name__ == "__main__":
                     with torch.no_grad():
                         logits, action_idx, clip_probs, vig_attn = agent.select_action(bboxes, pos_bboxes, lang_goal, grasps, evaluate=args.evaluate)
 
+                # Execute the chosen grasp
                 action = grasp_pose_set[action_idx]
                 reward, done = env.step(action)
                 iteration += 1
@@ -150,10 +157,12 @@ if __name__ == "__main__":
                 episode_reward += reward
                 print("\033[034m Episode: {}, step: {}, reward: {}\033[0m".format(episode, episode_steps, round(reward, 2)))
 
+                # Stop episode if max steps reached
                 if episode_steps == args.max_episode_step:
                     break
 
             
+            # Save episode statistics
             logger.episode_reward_logs.append(episode_reward)
             logger.episode_step_logs.append(episode_steps)
             logger.episode_success_logs.append(done)
@@ -163,6 +172,7 @@ if __name__ == "__main__":
             print("\033[034m Episode: {}, episode steps: {}, episode reward: {}, success: {}\033[0m".format(episode, episode_steps, round(episode_reward, 2), done))
 
             if episode == num_episode - 1:
+                # Compute aggregate metrics for the case
                 avg_success = sum(logger.episode_success_logs)/len(logger.episode_success_logs)
                 avg_reward = sum(logger.episode_reward_logs)/len(logger.episode_reward_logs)
                 avg_step = sum(logger.episode_step_logs)/len(logger.episode_step_logs)
@@ -176,6 +186,7 @@ if __name__ == "__main__":
                 else:
                     avg_success_step = 1000
 
+                # Write per-case summary to disk
                 result_file = os.path.join(logger.result_directory, "case" + str(case) + ".txt")
                 with open(result_file, "w") as out_file:
                     out_file.write(

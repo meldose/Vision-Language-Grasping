@@ -10,26 +10,36 @@ from utils import graspnet_config
 
 # Modified from https://github.com/OCRTOC/OCRTOC_software_package/blob/master/ocrtoc_perception/src/ocrtoc_perception/perceptor.py
 class Graspnet:
+    """Wrapper around GraspNet-BaseLine to generate and assign grasp poses."""
     def __init__(self):
+        # Load configuration (paths and thresholds) from utils.py
         self.config = graspnet_config
+        # Load the trained GraspNet checkpoint for inference
         self.graspnet_baseline = GraspNetBaseLine(checkpoint_path = self.config['graspnet_checkpoint_path'])
 
     def compute_grasp_pose(self, full_pcd):
+        # Convert Open3D point cloud to numpy array
         points, _ = o3dp.pcd2array(full_pcd)
+        # Copy the point cloud so we do not modify the original input
         grasp_pcd = copy.deepcopy(full_pcd)
+        # GraspNet uses a different coordinate convention (flip axes here)
         grasp_pcd.points = o3d.utility.Vector3dVector(-points)
 
         # generating grasp poses.
         gg = self.graspnet_baseline.inference(grasp_pcd)
+        # Convert results back to the world coordinate frame
         gg.translations = -gg.translations
         gg.rotation_matrices = -gg.rotation_matrices
+        # Refine approach distance along gripper x-axis
         gg.translations = gg.translations + gg.rotation_matrices[:, :, 0] * self.config['refine_approach_dist']
+        # Remove grasps that collide with scene points
         gg = self.graspnet_baseline.collision_detection(gg, points)
 
         # all the returned result in 'world' frame. 'gg' using 'graspnet' gripper frame.
         return gg
 
     def assign_grasp_pose(self, gg, object_poses):
+        """Assign grasps to the nearest object pose and filter by angle/score."""
         grasp_poses = dict()
         grasp_pose_set = []
         dist_thresh = self.config['dist_thresh']
@@ -52,10 +62,12 @@ class Graspnet:
 
         # move the center to the eelink frame
         # Note that here is rs[:,:,0] before
+        # Shift translation along approach direction by gripper depth
         ts = ts + rs[:,:,0] * (np.vstack((depths, depths, depths)).T)
         eelink_rs = np.zeros(shape = (len(rs), 3, 3), dtype = np.float32)
 
         # the coordinate systems are different in graspnet and ocrtoc
+        # Convert rotation matrices to the eelink frame convention
         eelink_rs[:,:,0] = rs[:,:,2]
         eelink_rs[:,:,1] = -rs[:,:,1]
         eelink_rs[:,:,2] = rs[:,:,0]
@@ -67,10 +79,12 @@ class Graspnet:
         min_object_ids = -1 * np.ones(shape = (len(rs)), dtype = np.int32)
 
         # first round to find the object that each grasp belongs to.
+        # Filter by angle with gravity direction (safety constraint)
         angle_mask = (rs[:, 2, 0] < -np.cos(angle_thresh / 180.0 * np.pi))
         for i, object_name in enumerate(object_poses.keys()):
             object_pose = object_poses[object_name]
 
+            # Compute distances from each grasp center to this object center
             dists = np.linalg.norm(ts - object_pose[:3,3], axis=1)
             object_mask = np.logical_and(dists < min_dists, dists < dist_thresh)
 
@@ -104,6 +118,7 @@ class Graspnet:
             else:
                 grasp_poses[object_name] = []
                 for i in range(len(i_gg)):
+                    # Keep geometry for visualization/debugging
                     remain_gg.append(i_gg[i].to_open3d_geometry())
                     grasp_rotation_matrix = i_eelink_rs[i]
                     if np.linalg.norm(np.cross(grasp_rotation_matrix[:,0], grasp_rotation_matrix[:,1]) - grasp_rotation_matrix[:,2]) > 0.1:
@@ -114,6 +129,7 @@ class Graspnet:
                     
                     grasp_pose = np.zeros(7)
                     grasp_pose[:3] = [i_ts[i][0], i_ts[i][1], i_ts[i][2]]
+                    # Convert rotation matrix to quaternion (x, y, z, w)
                     r = R.from_matrix(grasp_rotation_matrix)
                     grasp_pose[-4:] = r.as_quat()
 
@@ -142,6 +158,7 @@ class Graspnet:
         # generate grasping poses in a scene
         gg = self.compute_grasp_pose(full_pcd)
 
+        # assign grasps to objects and filter them
         grasp_pose_set, grasp_pose_dict, remain_gg = self.assign_grasp_pose(gg, object_poses)
 
         # visualization
@@ -149,5 +166,4 @@ class Graspnet:
         # o3d.visualization.draw_geometries([frame, full_pcd, *gg.to_open3d_geometry_list()])
 
         return grasp_pose_set, grasp_pose_dict, remain_gg
-
 

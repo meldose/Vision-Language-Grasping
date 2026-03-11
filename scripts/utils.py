@@ -13,6 +13,7 @@ from scipy.spatial.transform import Rotation as R
 from env.constants import WORKSPACE_LIMITS, PIXEL_SIZE
 
 
+# Parameters for point cloud fusion and ICP alignment
 reconstruction_config = {
     'nb_neighbors': 50,
     'std_ratio': 2.0,
@@ -24,6 +25,7 @@ reconstruction_config = {
     'max_correspondence_distance': 0.02
 }
 
+# GraspNet model configuration
 _repo_root = Path(__file__).resolve().parents[1]
 graspnet_config = {
     'graspnet_checkpoint_path': str(_repo_root / 'models' / 'graspnet' / 'logs' / 'log_rs' / 'checkpoint.tar'),
@@ -63,6 +65,7 @@ def get_heightmap(points, colors, bounds, pixel_size):
     # z-buffering for rendering the heightmap image.
     iz = np.argsort(points[:, -1])
     points, colors = points[iz], colors[iz]
+    # Project 3D points into heightmap pixel coordinates
     px = np.int32(np.floor((points[:, 0] - bounds[0, 0]) / pixel_size))
     py = np.int32(np.floor((points[:, 1] - bounds[1, 0]) / pixel_size))
     px = np.clip(px, 0, width - 1)
@@ -85,6 +88,7 @@ def get_pointcloud(depth, intrinsics):
     xlin = np.linspace(0, width - 1, width)
     ylin = np.linspace(0, height - 1, height)
     px, py = np.meshgrid(xlin, ylin)
+    # Back-project pixels to camera coordinates using intrinsics
     px = (px - intrinsics[0, 2]) * (depth / intrinsics[0, 0])
     py = (py - intrinsics[1, 2]) * (depth / intrinsics[1, 1])
     points = np.float32([px, py, depth]).transpose(1, 2, 0)
@@ -100,6 +104,7 @@ def transform_pointcloud(points, transform):
         points: HxWx3 float array of transformed 3D points.
     """
     padding = ((0, 0), (0, 0), (0, 1))
+    # Convert to homogeneous coordinates to apply 4x4 transform
     homogen_points = np.pad(points.copy(), padding, "constant", constant_values=1)
     for i in range(3):
         points[Ellipsis, i] = np.sum(transform[i, :] * homogen_points, axis=-1)
@@ -115,6 +120,7 @@ def reconstruct_heightmaps(color, depth, configs, bounds, pixel_size):
         position = np.array(config["position"]).reshape(3, 1)
         rotation = p.getMatrixFromQuaternion(config["rotation"])
         rotation = np.array(rotation).reshape(3, 3)
+        # Build world transform from camera pose
         transform = np.eye(4)
         transform[:3, :] = np.hstack((rotation, position))
         xyz = transform_pointcloud(xyz, transform)
@@ -134,11 +140,13 @@ def get_fuse_heightmaps(obs, configs, bounds, pixel_size):
     heightmaps = np.float32(heightmaps)
 
     # Fuse maps from different views.
+    # Average colors where multiple views overlap
     valid = np.sum(colormaps, axis=3) > 0
     repeat = np.sum(valid, axis=0)
     repeat[repeat == 0] = 1
     cmap = np.sum(colormaps, axis=0) / repeat[Ellipsis, None]
     cmap = np.uint8(np.round(cmap))
+    # Use max height to handle occlusions
     hmap = np.max(heightmaps, axis=0)  # Max to handle occlusions.
 
     return cmap, hmap
@@ -167,6 +175,7 @@ def get_true_heightmap(env):
 
 
 def get_heightmap_from_real_image(color, depth, segm, env):
+    """Project a real RGB-D image into the heightmap frame."""
     # Combine color with masks for faster processing.
     color = np.concatenate((color, segm[Ellipsis, None]), axis=2)
 
@@ -184,9 +193,11 @@ def get_heightmap_from_real_image(color, depth, segm, env):
 
 
 def process_pcds(pcds, reconstruction_config):
+    """Clean and fuse multiple point clouds using ICP registration."""
     trans = dict()
     pcd = pcds[0]
     pcd.estimate_normals()
+    # Remove statistical outliers in the first point cloud
     pcd, _ = pcd.remove_statistical_outlier(
         nb_neighbors = reconstruction_config['nb_neighbors'],
         std_ratio = reconstruction_config['std_ratio']
@@ -198,9 +209,11 @@ def process_pcds(pcds, reconstruction_config):
             std_ratio = reconstruction_config['std_ratio']
         )
         income_pcd.estimate_normals()
+        # Downsample to speed up ICP
         income_pcd = income_pcd.voxel_down_sample(voxel_size)
         transok_flag = False
         for _ in range(reconstruction_config['icp_max_try']): # try 5 times max
+            # Point-to-plane ICP for alignment
             reg_p2p = o3d.pipelines.registration.registration_icp(
                 income_pcd,
                 pcd,
@@ -216,7 +229,9 @@ def process_pcds(pcds, reconstruction_config):
                 transok_flag = True
                 break
         if not transok_flag:
+            # Fallback to identity if ICP fails
             reg_p2p.transformation = np.eye(4, dtype = np.float32)
+        # Apply the transform and merge
         income_pcd = income_pcd.transform(reg_p2p.transformation)
         trans[i] = reg_p2p.transformation
         pcd = o3dp.merge_pcds([pcd, income_pcd])
@@ -226,6 +241,7 @@ def process_pcds(pcds, reconstruction_config):
 
 
 def get_fuse_pointcloud(env):
+    """Capture multiple views and fuse into a single point cloud."""
     pcds = []
     configs = [env.oracle_cams[0], env.agent_cams[0], env.agent_cams[1], env.agent_cams[2]]
     # Capture near-orthographic RGB-D images and segmentation masks.
@@ -250,6 +266,7 @@ def get_fuse_pointcloud(env):
         iz = np.argsort(points[:, -1])
         points, colors = points[iz], colors[iz]
 
+        # Build Open3D point cloud object
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.colors = o3d.utility.Vector3dVector(colors / 255.0)
@@ -269,12 +286,14 @@ def get_fuse_pointcloud(env):
 
 
 def get_true_bboxs(env, color_image, depth_image, mask_image):
+    """Get per-object bounding box crops and approximate 3D centers."""
     # get mask of all objects
     bbox_images = []
     bbox_positions = []
     for obj_id in env.obj_ids["rigid"]:
         mask = np.zeros(mask_image.shape).astype(np.uint8)
         mask[mask_image == obj_id] = 255
+        # Compute connected components to get the object bounding box
         _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         stats = stats[stats[:,4].argsort()]
         if stats[:-1].shape[0] > 0:
@@ -296,9 +315,11 @@ def get_true_bboxs(env, color_image, depth_image, mask_image):
             mask_bboxs = cv2.rectangle(mask_BGR, start_point, end_point, color, thickness)
             cv2.imwrite('mask_bboxs.png', mask_bboxs)
 
+            # Crop the object image
             bbox_image = color_image[y0:y1, x0:x1]
             bbox_images.append(bbox_image)
             
+            # Estimate 3D center using pixel-to-world conversion
             pixel_x = (x0 + x1) // 2
             pixel_y = (y0 + y1) // 2
             bbox_pos = [
@@ -312,6 +333,7 @@ def get_true_bboxs(env, color_image, depth_image, mask_image):
 
 
 def relabel_mask(env, mask_image):
+    """Relabel segmentation mask: target=255, others=50,60,70,..., background=0."""
     assert env.target_obj_id != -1
     num_obj = 50
     for i in np.unique(mask_image):
@@ -344,6 +366,7 @@ def get_real_heightmap(env):
     """Get RGB-D orthographic heightmaps in real world."""
 
     color, depth = env.get_camera_data()
+    # Save a temp image for quick inspection/debugging
     cv2.imwrite("temp.png", cv2.cvtColor(color, cv2.COLOR_RGB2BGR))
 
     # Reconstruct real orthographic projection from point clouds.
@@ -388,6 +411,7 @@ def rotate_point(origin, point, angle):
 
 # Preprocess of model input
 def preprocess(bbox_images, bbox_positions, grasp_pose_set, n_px):
+    """Prepare cropped object images, object positions, and grasps for the model."""
     transform = Compose([
         Resize(n_px, interpolation=Image.BICUBIC),
         CenterCrop(n_px),
@@ -400,6 +424,7 @@ def preprocess(bbox_images, bbox_positions, grasp_pose_set, n_px):
     remain_bbox_positions = []
     for i in range(len(bbox_images)):
         if bbox_images[i].shape[0] >= 15 and bbox_images[i].shape[1] >= 15:
+            # Keep only sufficiently large crops
             remain_bboxes.append(bbox_images[i])  # shape = [n_obj, H, W, C]
             remain_bbox_positions.append(bbox_positions[i])
     print('Remaining bbox number', len(remain_bboxes))
@@ -433,6 +458,7 @@ def preprocess(bbox_images, bbox_positions, grasp_pose_set, n_px):
         else:
             pos_bboxes = torch.cat((pos_bboxes, bbox_pos), dim=0) # shape = [n_obj, pos_dim]
     if pos_bboxes != None:
+        # Cast to float for model input
         pos_bboxes = pos_bboxes.unsqueeze(0).to(dtype=torch.float32) # shape = [1, n_obj, pos_dim]
     
 
@@ -444,12 +470,14 @@ def preprocess(bbox_images, bbox_positions, grasp_pose_set, n_px):
             grasps = grasp
         else:
             grasps = torch.cat((grasps, grasp), dim=0) # shape = [n_grasp, grasp_dim]
+    # Add batch dimension and cast to float
     grasps = grasps.unsqueeze(0).to(dtype=torch.float32) # shape = [1, n_grasp, grasp_dim]
 
     return remain_bboxes, bboxes, pos_bboxes, grasps
 
 
 def plot_probs(text, bboxes, probs):
+    """Visualize per-object probabilities on cropped images."""
     plt.figure()
     plt.suptitle(text)
     for i in range(len(bboxes)):
@@ -462,6 +490,7 @@ def plot_probs(text, bboxes, probs):
     plt.show()
     
 def plot_attnmap(attn_map):
+    """Visualize attention matrix as a heatmap."""
     fig, ax = plt.subplots()
     ax.set_yticks([])
     # ax.set_yticks(range(attn_map.shape[0]))
@@ -485,6 +514,7 @@ def plot_attnmap(attn_map):
 
 # Get rotation matrix from euler angles
 def euler2rotm(theta):
+    """Convert Euler angles (radians) to a rotation matrix."""
     R_x = np.array(
         [
             [1, 0, 0],
@@ -512,6 +542,7 @@ def euler2rotm(theta):
 
 # Checks if a matrix is a valid rotation matrix.
 def isRotm(R):
+    """Validate that R is a rotation matrix (orthonormal with det=1)."""
     Rt = np.transpose(R)
     shouldBeIdentity = np.dot(Rt, R)
     I = np.identity(3, dtype=R.dtype)
@@ -521,6 +552,7 @@ def isRotm(R):
 
 # Calculates rotation matrix to euler angles
 def rotm2euler(R):
+    """Convert rotation matrix to Euler angles (radians)."""
 
     assert isRotm(R)
 
@@ -565,6 +597,7 @@ def angle2rotm(angle, axis, point=None):
 
 
 def rotm2angle(R):
+    """Convert rotation matrix to angle-axis representation."""
     # From: euclideanspace.com
 
     epsilon = 0.01  # Margin to allow for rounding errors

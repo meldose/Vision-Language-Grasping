@@ -7,6 +7,7 @@ import numpy as np
 
 
 class Logger:
+    """Simple file-based logger for training/testing artifacts and metrics."""
     def __init__(self, case_dir=None, case=None):
         # Create directory to save data
         timestamp = time.time()
@@ -18,10 +19,12 @@ class Logger:
             name = "test"
         else:
             name = "train"
+        # Base folder: logs/<timestamp>-<name>
         self.base_directory = os.path.join(
             os.path.abspath("logs"), timestamp_value.strftime("%Y-%m-%d-%H-%M-%S") + "-" + name,
         )
         print("Creating data logging session: %s" % (self.base_directory))
+        # Subfolders for various outputs
         self.color_heightmaps_directory = os.path.join(
             self.base_directory, "data", "color-heightmaps"
         )
@@ -37,12 +40,14 @@ class Logger:
         self.transitions_directory = os.path.join(self.base_directory, "transitions")
         self.checkpoints_directory = os.path.join(self.base_directory, "checkpoints")
 
+        # In-memory logs (written to disk during training)
         self.reward_logs = []
         self.episode_reward_logs = []
         self.episode_step_logs = []
         self.episode_success_logs = []
         self.executed_action_logs = []
 
+        # Create directories if missing
         if not os.path.exists(self.color_heightmaps_directory):
             os.makedirs(self.color_heightmaps_directory)
         if not os.path.exists(self.depth_heightmaps_directory):
@@ -67,11 +72,13 @@ class Logger:
 
 
     def save_heightmaps(self, iteration, color_heightmap, depth_heightmap):
+        # Convert RGB to BGR for OpenCV and save images
         color_heightmap = cv2.cvtColor(color_heightmap, cv2.COLOR_RGB2BGR)
         cv2.imwrite(
             os.path.join(self.color_heightmaps_directory, "%06d.color.png" % (iteration)),
             color_heightmap,
         )
+        # Save depth in 1e-5 meters as 16-bit PNG
         depth_heightmap = np.round(depth_heightmap * 100000).astype(
             np.uint16
         )  # Save depth in 1e-5 meters
@@ -81,6 +88,7 @@ class Logger:
         )
     
     def save_bbox_images(self, iteration, bbox_images):
+        # Save each object crop with its index in the filename
         for i in range(len(bbox_images)):
             bbox_image = cv2.cvtColor(bbox_images[i], cv2.COLOR_RGB2BGR)
             cv2.imwrite(
@@ -89,16 +97,19 @@ class Logger:
             )
 
     def write_to_log(self, log_name, log):
+        # Write a numeric log to disk as space-separated values
         np.savetxt(
             os.path.join(self.transitions_directory, "%s.log.txt" % log_name), log, delimiter=" "
         )
 
     def save_predictions(self, iteration, pred, name="push"):
+        # Save predicted affordance or action map
         cv2.imwrite(
             os.path.join(self.prediction_directory, "%06d.png" % (iteration)), pred,
         )
 
     def save_visualizations(self, iteration, affordance_vis, name):
+        # Save visualization images (e.g., attention or heatmaps)
         cv2.imwrite(
             os.path.join(self.visualizations_directory, "%06d.%s.png" % (iteration, name)),
             affordance_vis,
@@ -111,6 +122,7 @@ class Logger:
             ckpt_path = os.path.join(self.base_directory, self.checkpoints_directory, ckpt_path)
         print('Saving models to {}'.format(ckpt_path))
         # torch.save(model.state_dict(), ckpt_path)
+        # Save multiple submodules and optimizers for a full resume
         torch.save({'feature_state_dict': model.vilg_fusion.state_dict(),
                     'policy_state_dict': model.policy.state_dict(),
                     'critic_state_dict': model.critic.state_dict(),
@@ -124,6 +136,7 @@ class Logger:
         if ckpt_path is not None:
             checkpoint = torch.load(ckpt_path)
 
+            # Restore weights and optimizer states
             model.vilg_fusion.load_state_dict(checkpoint['feature_state_dict'])
             model.policy.load_state_dict(checkpoint['policy_state_dict'])
             model.critic.load_state_dict(checkpoint['critic_state_dict'])
@@ -133,13 +146,14 @@ class Logger:
 
             
             if evaluate:
+                # Switch to evaluation mode (no dropout, fixed batchnorm)
                 model.vilg_fusion.eval()
                 model.policy.eval()
                 model.critic.eval()
                 model.critic_target.eval()
             else:
+                # Switch to training mode
                 model.vilg_fusion.train()
                 model.policy.train()
                 model.critic.train()
                 model.critic_target.train()
-
